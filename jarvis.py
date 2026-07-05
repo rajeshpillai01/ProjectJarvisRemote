@@ -23,7 +23,10 @@ from tools.screenshot import take_screenshot, EmptyArgs
 load_dotenv() # This automatically injects your .env file into os.environ
 
 import config # Now you can safely import your config module!
-
+from tools.memory import memorize_fact, recall_facts
+from tools.voice import speak_out_loud
+from tools.audio_zones import route_audio_zone
+from pydantic import BaseModel, Field  # Ensure schemas match
 
 
 # Enable logging
@@ -68,7 +71,11 @@ tools_map = {
     "lock_workstation": lock_workstation,
     "run_terminal_command": run_terminal_command,
     "interact_with_active_app": interact_with_active_app,
-    "take_screenshot": take_screenshot
+    "take_screenshot": take_screenshot,
+    "memorize_fact": memorize_fact,
+    "recall_facts": recall_facts,
+    "speak_out_loud": speak_out_loud,
+    "route_audio_zone": route_audio_zone
 }
 
 # ─── SYSTEM INSTRUCTIONS ─────────────────────────────────────────────────────
@@ -77,13 +84,30 @@ JARVIS_INSTRUCTION = (
     "Your primary job is to select the single most appropriate tool based on strict boundary definitions:\n"
     "1. To launch a brand new program or URL, use 'open_website_or_app'.\n"
     "2. To type or enter data into an active window, use 'interact_with_active_app'.\n"
-    "3. If the user explicitly asks for an image/screenshot of their desktop without further questions, invoke 'take_screenshot'."
+    "3. To take a screenshot, use 'take_screenshot'.\n"
+    "4. To save information, rules, or preferences about the user, use 'memorize_fact'.\n"
+    "5. To search or recall things the user told you to remember, use 'recall_facts'.\n"
+    "6. To vocalize speech physically through the computer's speakers, use 'speak_out_loud'.\n"
+    "7. To change sound outputs between headphones and speakers, use 'route_audio_zone'."
 )
 
 
 # ─── CORE TELEGRAM & AI LOGIC ────────────────────────────────────────────────
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    class MemorizeArgs(BaseModel):
+        fact: str = Field(description="Information to store.")
+
+    class RecallArgs(BaseModel):
+        query: str = Field(description="Topic to search memory for.")
+
+    class SpeakArgs(BaseModel):
+        phrase: str = Field(description="Text to say out loud.")
+
+    class AudioZoneArgs(BaseModel):
+        zone: str = Field(description="Target device group name.")
+
+
     if update.message.from_user.id != config.ALLOWED_USER_ID:
         return
 
@@ -111,29 +135,68 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         open_tool = types.FunctionDeclaration(
             name="open_website_or_app",
             description="ONLY use to launch a BRAND NEW application or website that is not currently running.",
-            parameters=OpenAppArgs
+            parameters=OpenAppArgs.model_json_schema()
         )
 
         interact_tool = types.FunctionDeclaration(
             name="interact_with_active_app",
             description="ONLY use to type, calculate, or enter text into an application window that is ALREADY OPEN on screen.",
-            parameters=InteractAppArgs
+            parameters=InteractAppArgs.model_json_schema()
         )
 
         # Fixed: Uses EmptyArgs schema so Gemini knows it doesn't need parameters
         screenshot_tool = types.FunctionDeclaration(
             name="take_screenshot",
             description="ONLY use when the user directly wants to capture, snap, or take a screenshot of the system screen.",
-            parameters=EmptyArgs
+            parameters=EmptyArgs.model_json_schema()
+        )
+
+
+        speak_tool = types.FunctionDeclaration(
+            name="speak_out_loud",
+            description="Use this tool when the user explicitly wants you to broadcast audio or say something out loud through the host computer's speakers.",
+            parameters=SpeakArgs.model_json_schema()
+        )
+
+        zone_tool = types.FunctionDeclaration(
+            name="route_audio_zone",
+            description="Use this to change or route system sound output default devices between speakers and headphones.",
+            parameters=AudioZoneArgs.model_json_schema()
+        )
+
+        # 2. Update the Tool declarations to explicitly convert your models
+        memorize_tool = types.FunctionDeclaration(
+            name="memorize_fact",
+            description="Use this tool when the user explicitly instructs you to remember, save, or log a fact or preference.",
+            # Explicitly force the Pydantic structure to pass its parameters dictionary representation
+            parameters=MemorizeArgs.model_json_schema()
+        )
+
+        recall_tool = types.FunctionDeclaration(
+            name="recall_facts",
+            description="Use this tool when the user asks you what you remember about a topic or queries their logs.",
+            parameters=RecallArgs.model_json_schema()
         )
 
         response = ai_client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-3.5-flash',
             contents=user_text,
             config=types.GenerateContentConfig(
                 system_instruction=JARVIS_INSTRUCTION,
-                # Fixed: Properly passed the screenshot_tool blueprint to the tool array
-                tools=[types.Tool(function_declarations=[open_tool, interact_tool, screenshot_tool])],
+                # bundle ALL declarations into a single Tool object
+                tools=[
+                    types.Tool(
+                        function_declarations=[
+                            open_tool,
+                            interact_tool,
+                            screenshot_tool,
+                            memorize_tool,
+                            recall_tool,
+                            speak_tool,
+                            zone_tool
+                        ]
+                    )
+                ],
                 temperature=0.0,
                 automatic_function_calling={"disable": True}
             )
@@ -145,6 +208,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 func_args = call.args
 
                 logging.info(f"Gemini invoked tool strictly: {func_name} with args: {func_args}")
+                print(f"DEBUG PAYLOAD FOR {func_name}: {type(func_args)} -> {func_args}")  # <-- Add this temporary line
                 await update.message.reply_text(f"Jarvis: Accessing tool subsystem '{func_name}'...")
 
                 if func_name in tools_map:
