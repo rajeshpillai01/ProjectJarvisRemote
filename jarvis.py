@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
 from tools.audio import set_system_volume
+from tools.email_sender import EmailArgs, send_background_email
 from tools.interactiveapp import interact_with_active_app, InteractAppArgs
 from tools.lockworkstation import lock_workstation
 from tools.openwebsiteorapp import open_website_or_app
@@ -75,7 +76,8 @@ tools_map = {
     "memorize_fact": memorize_fact,
     "recall_facts": recall_facts,
     "speak_out_loud": speak_out_loud,
-    "route_audio_zone": route_audio_zone
+    "route_audio_zone": route_audio_zone,
+    "send_background_email": send_background_email
 }
 
 # ─── SYSTEM INSTRUCTIONS ─────────────────────────────────────────────────────
@@ -88,7 +90,8 @@ JARVIS_INSTRUCTION = (
     "4. To save information, rules, or preferences about the user, use 'memorize_fact'.\n"
     "5. To search or recall things the user told you to remember, use 'recall_facts'.\n"
     "6. To vocalize speech physically through the computer's speakers, use 'speak_out_loud'.\n"
-    "7. To change sound outputs between headphones and speakers, use 'route_audio_zone'."
+    "7. To change sound outputs between headphones and speakers, use 'route_audio_zone'.\n"
+    "8. To send an email via gmail, use 'send_background_email'.\n"
 )
 
 
@@ -178,6 +181,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parameters=RecallArgs.model_json_schema()
         )
 
+        # Define the function blueprint declaration:
+        email_tool = types.FunctionDeclaration(
+            name="send_background_email",
+            description="ONLY use when the user explicitly instructs you to send an email to a specific address with a subject or body text context.",
+            parameters=EmailArgs.model_json_schema()
+        )
+
         response = ai_client.models.generate_content(
             model='gemini-3.5-flash',
             contents=user_text,
@@ -193,7 +203,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             memorize_tool,
                             recall_tool,
                             speak_tool,
-                            zone_tool
+                            zone_tool,
+                            email_tool
                         ]
                     )
                 ],
