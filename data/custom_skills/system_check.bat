@@ -1,0 +1,1 @@
+netstat -e & tasklist | findstr python & systeminfo | findstr "System Boot Time"
