@@ -28,7 +28,12 @@ from tools.memory import memorize_fact, recall_facts
 from tools.voice import speak_out_loud
 from tools.audio_zones import route_audio_zone
 from pydantic import BaseModel, Field  # Ensure schemas match
+from tools.skills import save_custom_skill, execute_custom_skill, SaveSkillArgs, RunSkillArgs
 
+from tools.mcp_client import JarvisMCPManager
+import asyncio
+
+mcp_manager = JarvisMCPManager()
 
 # Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -77,7 +82,9 @@ tools_map = {
     "recall_facts": recall_facts,
     "speak_out_loud": speak_out_loud,
     "route_audio_zone": route_audio_zone,
-    "send_background_email": send_background_email
+    "send_background_email": send_background_email,
+    "save_custom_skill": save_custom_skill,
+    "execute_custom_skill": execute_custom_skill
 }
 
 # ─── SYSTEM INSTRUCTIONS ─────────────────────────────────────────────────────
@@ -92,6 +99,8 @@ JARVIS_INSTRUCTION = (
     "6. To vocalize speech physically through the computer's speakers, use 'speak_out_loud'.\n"
     "7. To change sound outputs between headphones and speakers, use 'route_audio_zone'.\n"
     "8. To send an email via gmail, use 'send_background_email'.\n"
+    "9. To save or learn a new set of command operations taught by the user, use 'save_custom_skill'.\n"
+    "10. To execute a custom macro or skill the user previously taught you, use 'execute_custom_skill'."
 )
 
 
@@ -188,8 +197,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parameters=EmailArgs.model_json_schema()
         )
 
+        save_skill_tool = types.FunctionDeclaration(
+            name="save_custom_skill",
+            description="ONLY use when the user explicitly teaches you a new skill or multi-step command sequence. Generate a clean windows batch script payload for them.",
+            parameters=SaveSkillArgs.model_json_schema()
+        )
+
+        run_skill_tool = types.FunctionDeclaration(
+            name="execute_custom_skill",
+            description="Use this when the user asks you to run, execute, or trigger a custom skill or macro they previously taught you.",
+            parameters=RunSkillArgs.model_json_schema()
+        )
+
+        # Fetch dynamic tools directly from our connected MCP servers
+        mcp_declarations = mcp_manager.get_gemini_declarations()
+
+
         response = ai_client.models.generate_content(
-            model='gemini-3.5-flash',
+            model='gemini-2.5-flash',
             contents=user_text,
             config=types.GenerateContentConfig(
                 system_instruction=JARVIS_INSTRUCTION,
@@ -204,8 +229,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             recall_tool,
                             speak_tool,
                             zone_tool,
-                            email_tool
-                        ]
+                            email_tool,
+                            save_skill_tool,
+                            run_skill_tool
+                        ]+ mcp_declarations # <─── Injecting the MCP tools dynamically!
                     )
                 ],
                 temperature=0.0,
@@ -232,9 +259,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             await update.message.reply_photo(photo=photo, caption="Here is the capture, sir.")
                         os.remove("screenshot.png")
                     else:
+                        # ─── THE CHARACTER LIMIT SAFEGUARD ──────────────────────────────
+                        # Truncate text to 3500 characters to leave room for headers/formatting
+                        if len(execution_result) > 3500:
+                            execution_result = execution_result[
+                                                   :3500] + "\n\n⚠️ [Output truncated due to Telegram size limits...]"
+                        # ────────────────────────────────────────────────────────────────
                         await update.message.reply_text(execution_result)
                 else:
-                    await update.message.reply_text("Tool mapped incorrectly in systems registry.")
+                    # Check if the tool belongs to the connected MCP server
+                    is_mcp_tool = any(t.name == func_name for t in mcp_manager.mcp_tools)
+                    if is_mcp_tool:
+                        await update.message.reply_text(f"Jarvis: Routing request through MCP engine layer...")
+                        execution_result = await mcp_manager.call_mcp_tool(func_name, func_args)
+                        await update.message.reply_text(execution_result)
+                    else:
+                        await update.message.reply_text("Tool mapped incorrectly in systems registry.")
         else:
             await update.message.reply_text(response.text)
 
@@ -244,6 +284,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     print("Jarvis 2.0 is online. Next-gen tool routing active...")
+
+    # Establish the async connection handshake cleanly
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(mcp_manager.connect_to_server())
+
     app = Application.builder().token(config.TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.run_polling()
